@@ -1,16 +1,98 @@
 import numpy as np
+import gym
+from gym import spaces
 from pyboy import PyBoy
+from stable_baselines3 import DQN
 
-# Inicializa o emulador com a ROM de Pokémon
-rom_path = 'C:\\Users\\andre\\Desktop\\Python\\Projeto_PokeIA\\PokemonBlue.gb'
-pyboy = PyBoy(rom_path, sound=True)
+# Definição do ambiente Pokémon Blue
+class PokemonBlueEnv(gym.Env):
+    def __init__(self):
+        super(PokemonBlueEnv, self).__init__()
+        self.rom_path = 'C:\\Users\\andre\\Desktop\\Python\\Projeto_PokeIA\\PokemonBlue.gb'
+        self.pyboy = PyBoy(self.rom_path, sound=True)
+        
+        # Definir o espaço de ação e de observação
+        self.action_space = spaces.Discrete(8)  # 8 ações possíveis: A, B, start, select, cima, baixo, esquerda, direita
+        self.observation_space = spaces.Box(low=0, high=255, shape=(32, 32), dtype=np.uint8)  # Exemplo de espaço de observação
 
-# Listas para armazenar os dados e eventos importantes
-tile_matrices_bg = []
-tile_matrices_win = []
-sprites_info = []
-exploration_points = []  # Armazena se uma nova área foi descoberta
-explored_areas = []  # Lista para armazenar as áreas exploradas
+        # Inicializa o estado do ambiente
+        self.previous_exp = [0] * 6  # Experiência inicial para cada Pokémon
+        self.total_exp_gain = [0] * 6
+        self.new_areas_count = 0
+        self.explored_areas = []
+        self.total_reward = 0  # Contador de recompensa total
+
+    def step(self, action):
+        # Define as ações possíveis
+        actions = [
+            "A", "B", "START", "SELECT", "UP", "DOWN", "LEFT", "RIGHT"
+        ]
+        
+        # Executa a ação escolhida
+        button = actions[action]
+        self.pyboy.button_press(button)
+        self.pyboy.tick()
+        self.pyboy.button_release(button)
+        self.pyboy.tick()
+
+        # Captura o estado do jogo
+        tilemap_bg = self.pyboy.tilemap_background
+        tile_matrix_bg = tilemap_bg[0:32, 0:32]
+
+        # Calcular recompensa baseada em exploração
+        reward = 0
+        if is_new_area(tile_matrix_bg, self.explored_areas):
+            self.new_areas_count += 1
+            self.explored_areas.append(tile_matrix_bg)
+            reward += 1  # Recompensa para nova área explorada
+
+        # Calcular recompensa baseada em experiência
+        memory = self.pyboy.memory
+        for idx, (start_addr, end_addr) in enumerate(pokemon_exp_addresses):
+            current_exp, exp_gain = check_experience_gain(memory, (start_addr, end_addr), self.previous_exp[idx])
+            self.total_exp_gain[idx] += exp_gain
+            reward += exp_gain // 100000  # Recompensa para cada 100.000 de experiência
+            self.previous_exp[idx] = current_exp
+
+        # Adicionar a recompensa ao total acumulado
+        self.total_reward += reward
+
+        # Definir se o episódio terminou (pode definir uma condição de término específica)
+        done = False
+
+        # Converter o estado para um array NumPy antes de retornar
+        state = np.array(tile_matrix_bg, dtype=np.uint8)
+
+        # Retornar o estado atual, recompensa, done, e info
+        return state, reward, done, {}
+
+    def reset(self):
+        # Reinicia o jogo e retorna o estado inicial
+        self.pyboy.stop()
+        self.pyboy = PyBoy(self.rom_path, sound=True)
+        self.previous_exp = [0] * 6
+        self.total_exp_gain = [0] * 6
+        self.new_areas_count = 0
+        self.explored_areas = []
+        self.total_reward = 0  # Reinicia o contador de recompensas totais
+        initial_state = np.zeros((32, 32), dtype=np.uint8)  # Estado inicial vazio
+        return initial_state
+
+    def render(self, mode='human'):
+        pass  # Pode implementar para visualização, se necessário
+
+    def close(self):
+        self.pyboy.stop()
+
+# Funções auxiliares para avaliação
+def is_new_area(tile_matrix, explored_areas):
+    return not np.any([np.array_equal(tile_matrix, area) for area in explored_areas])
+
+def check_experience_gain(memory, address_range, previous_exp):
+    exp_bytes = memory[address_range[0]:address_range[1]+1]  # XP é armazenado em 3 bytes
+    current_exp = exp_bytes[0] + (exp_bytes[1] << 8) + (exp_bytes[2] << 16)
+    exp_gain = current_exp - previous_exp
+    return current_exp, exp_gain
 
 # Endereços de memória para a experiência de cada Pokémon no inventário
 pokemon_exp_addresses = [
@@ -22,78 +104,39 @@ pokemon_exp_addresses = [
     (0xD255, 0xD257)   # Sexto Pokémon
 ]
 
-# Funções auxiliares para avaliar o sucesso
-def is_new_area(tile_matrix, explored_areas):
-    return not np.any([np.array_equal(tile_matrix, area) for area in explored_areas])
+# Inicializa o ambiente
+env = PokemonBlueEnv()
+obs = env.reset()
 
-# Função para verificar ganho de experiência para um Pokémon específico
-def check_experience_gain(memory, address_range, previous_exp):
-    exp_bytes = memory[address_range[0]:address_range[1]+1]  # XP é armazenado em 3 bytes
-    current_exp = exp_bytes[0] + (exp_bytes[1] << 8) + (exp_bytes[2] << 16)
-    
-    exp_gain = current_exp - previous_exp
-    return current_exp, exp_gain
+# Treinamento com DQN
+model = DQN('MlpPolicy', env, verbose=1)
 
-# Inicializa valores
-previous_exp = [0] * len(pokemon_exp_addresses)  # Lista para armazenar a experiência prévia de cada Pokémon
-total_exp_gain = [0] * len(pokemon_exp_addresses)  # Lista para armazenar o ganho total de experiência
-new_areas_count = 0  # Contador de novas áreas exploradas
-total_score = 0  # Pontuação total
+# Treinar o modelo
+model.learn(total_timesteps=10000)
 
-# Loop para capturar o estado do jogo e simular a interação automática
-for i in range(5000):
-    pyboy.button_press("A")
-    pyboy.tick()
-    pyboy.button_release("A")
-    pyboy.tick()
+# Salvar o modelo treinado
+model.save("pokemon_blue_dqn_model")
 
-    if i % 200 == 0:
-        tilemap_bg = pyboy.tilemap_background
-        tilemap_win = pyboy.tilemap_window
+# Carregar o modelo e testar
+model = DQN.load("pokemon_blue_dqn_model")
+obs = env.reset()
 
-        tile_matrix_bg = tilemap_bg[0:32, 0:32]
-        tile_matrix_win = tilemap_win[0:32, 0:32]
+# Variável para armazenar o total de recompensas ao longo das runs
+total_rewards = []
 
-        sprites = [pyboy.get_sprite(idx) for idx in range(40) if pyboy.get_sprite(idx).on_screen]
+for _ in range(10):  # Execute 10 runs para ver o desempenho
+    obs = env.reset()
+    total_episode_reward = 0
+    for _ in range(1000):
+        action, _states = model.predict(obs)
+        obs, reward, done, info = env.step(action)
+        total_episode_reward += reward
+        env.render()  # Pode implementar para ver o progresso, se necessário
+        if done:
+            break
+    total_rewards.append(total_episode_reward)
+    print(f"Total de recompensas nesta run: {total_episode_reward}")
 
-        if is_new_area(tile_matrix_bg, explored_areas):
-            exploration_points.append(1)
-            explored_areas.append(tile_matrix_bg)
-            new_areas_count += 1  # Incrementa o contador de novas áreas
-            total_score += 1  # 1 ponto por nova área explorada
-        else:
-            exploration_points.append(0)
-
-        tile_matrices_bg.append(tile_matrix_bg)
-        tile_matrices_win.append(tile_matrix_win)
-        sprites_info.append(sprites)
-
-        memory = pyboy.memory
-        for idx, (start_addr, end_addr) in enumerate(pokemon_exp_addresses):
-            current_exp, exp_gain = check_experience_gain(memory, (start_addr, end_addr), previous_exp[idx])
-            
-            if exp_gain > 0:
-                print(f"Pokémon {idx+1} ganhou {exp_gain} pontos de experiência!")
-                total_exp_gain[idx] += exp_gain  # Adiciona ao total
-                previous_exp[idx] = current_exp  # Atualiza para o próximo ciclo
-
-# Calcula os pontos de experiência e adiciona à pontuação total
-total_exp_points = sum(total_exp_gain) // 100000  # 1 ponto para cada 100.000 pontos de experiência
-total_score += total_exp_points
-
-# Imprime o total de experiência ganha por cada Pokémon
-for idx, exp_gain in enumerate(total_exp_gain):
-    print(f"Total de experiência ganha pelo Pokémon {idx+1}: {exp_gain}")
-
-# Imprime o total de novas áreas exploradas
-print(f"Total de novas áreas exploradas: {new_areas_count}")
-
-# Imprime a pontuação total
-print(f"Pontuação total: {total_score}")
-
-# Salva os resultados
-np.save('C:\\Users\\andre\\Desktop\\Python\\Projeto_PokeIA\\screenshots\\total_exp_gain.npy', np.array(total_exp_gain))  # Salva o total de experiência ganha
-np.save('C:\\Users\\andre\\Desktop\\Python\\Projeto_PokeIA\\screenshots\\new_areas_count.npy', np.array(new_areas_count))  # Salva o total de novas áreas exploradas
-np.save('C:\\Users\\andre\\Desktop\\Python\\Projeto_PokeIA\\screenshots\\total_score.npy', np.array(total_score))  # Salva a pontuação total
-
-pyboy.stop()
+# Imprime o total de recompensas de cada run
+print(f"Recompensas de todas as runs: {total_rewards}")
+print(f"Média de recompensas: {np.mean(total_rewards)}")
