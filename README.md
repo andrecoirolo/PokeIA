@@ -63,7 +63,7 @@ Repetir: Continuar o ciclo de execução, avaliação, seleção, e treino.
 
 Executar Múltiplas Runs: Treinar o agente várias vezes, cada run usando um conjunto inicial de parâmetros diferentes (ou simplesmente começando do zero).
 
-
+Gravação e Reprodução: O projeto suportar gravação e reprodução de partidas, útil para testar e avaliar o desempenho da IA.
 
 
 Bibliografia:
