@@ -70,3 +70,4 @@ Bibliografia:
 
 Para encotrar os slots de memória para cada item do jogo:
 https://datacrystal.tcrf.net/wiki/Pokémon_Red_and_Blue/RAM_map#Joypad_simulation
+https://archives.glitchcity.info/forums/board-76/thread-4200/page-0.html
