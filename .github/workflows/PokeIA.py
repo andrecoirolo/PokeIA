@@ -4,12 +4,24 @@ from gym import spaces
 from pyboy import PyBoy
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+import os
 
 # Configuração para habilitar/desabilitar a interface gráfica
 enable_gui = True  # Altere para False para desativar a interface gráfica
 
 # Caminho para a ROM de Pokémon Blue
 rom_path = 'C:\\Users\\andre\\Desktop\\Python\\Projeto_PokeIA\\PokemonBlue.gb'
+
+# Caminho para o arquivo de save
+save_file_path = 'C:\\Users\\andre\\Desktop\\Python\\Projeto_PokeIA\\PokemonBlue.gb.ram'
+
+# Função para apagar o arquivo de save
+def delete_save_file():
+    if os.path.exists(save_file_path):
+        os.remove(save_file_path)
+        print_and_log(f"Arquivo de save deletado: {save_file_path}", log_file)
+    else:
+        print_and_log("Nenhum arquivo de save encontrado para deletar.", log_file)
 
 # Caminho para o arquivo de log
 log_file_path = 'C:\\Users\\andre\\Desktop\\Python\\Projeto_PokeIA\\output_log.txt'
@@ -27,6 +39,19 @@ def print_and_log(message, log_file):
 def get_game_state(pyboy, reward_total):
     memory = pyboy.memory  # Acessar a memória diretamente
 
+    # Calcular experiência total
+    experience_addresses = [
+        (0xD179, 0xD17A, 0xD17B),  # Pokémon 1
+        (0xD1A5, 0xD1A6, 0xD1A7),  # Pokémon 2
+        (0xD1D1, 0xD1D2, 0xD1D3),  # Pokémon 3
+        (0xD1FD, 0xD1FE, 0xD1FF),  # Pokémon 4
+        (0xD229, 0xD22A, 0xD22B),  # Pokémon 5
+        (0xD255, 0xD256, 0xD257)   # Pokémon 6
+    ]
+    total_experience = 0
+    for addr1, addr2, addr3 in experience_addresses:
+        total_experience += (memory[addr1] << 16) + (memory[addr2] << 8) + memory[addr3]
+
     # Criar um array de estado com os valores de interesse, incluindo recompensa total
     state = np.array([
         memory[0xD16D],  # player_hp
@@ -37,8 +62,9 @@ def get_game_state(pyboy, reward_total):
         memory[0xD361],  # y_coord
         memory[0xD35E],  # map_id
         memory[0xD356],  # badge_count
+        total_experience, # total_experience
         reward_total     # incluir recompensa total no estado observado
-    ], dtype=np.uint8)
+    ], dtype=np.uint32)  # Alterado para uint32 para comportar o total_experience
     
     return state
 
@@ -46,7 +72,9 @@ def get_game_state(pyboy, reward_total):
 class RewardSystem:
     def __init__(self, env_id):
         self.visited_locations = set()  # Armazena as áreas já visitadas
+        self.visited_map_ids = set()  # Armazena os map_ids já visitados
         self.reward_total = 0
+        self.previous_total_experience = 0  # Para verificar o aumento de experiência
         self.env_id = env_id  # Identificador do ambiente
 
     def calculate_reward(self, current_state):
@@ -55,8 +83,24 @@ class RewardSystem:
         # Recompensa de Exploração
         location = (current_state[6], current_state[4], current_state[5])  # (map_id, x_coord, y_coord)
         if location not in self.visited_locations:
-            reward += 10  # Atribuir uma recompensa ao encontrar uma nova área
+            reward += 1  # Atribuir uma recompensa ao encontrar uma nova área
             self.visited_locations.add(location)
+
+        # Recompensa de Exploração por novo map_id
+        map_id = current_state[6]  # map_id está na posição 6 do array
+        if map_id not in self.visited_map_ids:
+            reward += 50  # Atribuir recompensa adicional por explorar novo map_id
+            self.visited_map_ids.add(map_id)        
+
+        # Recompensa por ganhar batalhas (aumento de experiência)
+        current_total_experience = current_state[8]  # total_experience está na posição 8 do array
+        if current_total_experience > self.previous_total_experience:
+            current_battle_state = current_state[3]  # battle_state está na posição 3 do array
+            if current_battle_state == 2:
+                reward += 250  # Recompensa por aumentar experiência em batalha normal
+            elif current_battle_state == 1:
+                reward += 20  # Recompensa por aumentar experiência em batalha menor
+            self.previous_total_experience = current_total_experience
 
         # Atualizar o total de recompensa acumulada
         previous_total = self.reward_total
@@ -78,12 +122,12 @@ class PokemonEnv(gym.Env):
         super(PokemonEnv, self).__init__()
 
         # Define o tipo de janela com base em enable_gui
-        self.pyboy = PyBoy(rom_path, window="headless", sound=False)
+        self.pyboy = PyBoy(rom_path, window="null", sound=False)
         self.pyboy.set_emulation_speed(40)
 
         # Define o espaço de ação e observação
         self.action_space = spaces.Discrete(8)  # 8 ações disponíveis agora
-        self.observation_space = spaces.Box(low=0, high=255, shape=(9,), dtype=np.uint8)  # Inclui recompensa total
+        self.observation_space = spaces.Box(low=0, high=2**32-1, shape=(10,), dtype=np.uint8)  # Inclui recompensa total
 
         # Inicializa o sistema de recompensa com um ID de ambiente
         self.reward_system = RewardSystem(env_id)
@@ -114,7 +158,8 @@ class PokemonEnv(gym.Env):
 
     def reset(self):
         self.pyboy.stop()
-        self.pyboy = PyBoy(rom_path, window="SDL2", sound=False)
+        delete_save_file()  # Deleta o save antes de resetar
+        self.pyboy = PyBoy(rom_path, window="null", sound=False) # Para aparecer as janelas, deixe na opção window="SDL2"
         self.pyboy.set_emulation_speed(40)
         self.tick_count = 0  # Resetar contador de ticks
         initial_state = get_game_state(self.pyboy, self.reward_system.reward_total)
@@ -141,11 +186,12 @@ def make_env(env_id):
     return _init
 
 # Criação de múltiplas instâncias do ambiente usando DummyVecEnv
-num_envs = 4  # Número de instâncias paralelas
+num_envs = 8  # Número de instâncias paralelas
 envs = DummyVecEnv([make_env(i) for i in range(num_envs)])
 
 # Criação do modelo de AR usando PPO
-model = PPO("MlpPolicy", envs, verbose=1)
+model = PPO("MlpPolicy", envs, verbose=1, learning_rate=0.001, n_steps=2048)  # Pode testar valores menores, como 1024 ou até 512 | antigamente era # model = PPO("MlpPolicy", envs, verbose=1)
+# Uma taxa de aprendizado mais alta pode acelerar o aprendizado inicial, mas cuidado, pois pode levar a uma instabilidade. Se o valor padrão for 0.0003, você pode tentar aumentá-lo levemente para 0.0005 ou 0.001.
 
 # Treinamento do modelo
 model.learn(total_timesteps=100000)  # Ajuste o número de timesteps conforme necessário
@@ -172,3 +218,6 @@ for _ in range(1000):
 
 # Fecha o arquivo de log
 log_file.close()
+
+# Deleta o save
+delete_save_file()
